@@ -62,3 +62,53 @@ def verify_index(dataset, report, index):
     if index != expected:
         raise Invalid('provenance index does not match source replay')
     return {'valid': True, 'waiting': len(index['waiting_evidence']), 'chains': len(index['chain_evidence'])}
+
+
+def competing_lineage(dataset, report, visit_id):
+    study = report['competing_risks']
+    if visit_id not in dataset.visits:
+        raise KeyError(visit_id)
+    view = dataset.slice(report['options']['as_of'], report['options']['known_at'])
+    episode = next((row for row in study['episodes'] if row['visit'] == visit_id), None)
+    selected = episode is not None
+    excluded = None if selected else next(
+        (row for row in study['selected']['excluded_records'] if row['visit'] == visit_id), None)
+    invisible = next((row for row in study['selected']['invisible_records'] if row['visit'] == visit_id), None)
+    outside_stage = dataset.stage(visit_id) != study['stage']
+    records = []
+    if visit_id in view['visits']:
+        source = view['visits'][visit_id]
+        records.append({'table': 'visits', 'id': visit_id, 'digest': digest(source)})
+        records.append({'table': 'people', 'id': source['person'],
+                        'digest': digest(dataset.people[source['person']])})
+        records.append({'table': 'facilities', 'id': source['facility'],
+                        'digest': digest(dataset.facilities[source['facility']])})
+    if episode is not None and visit_id not in view['visits']:
+        raise Invalid('selected competing-risk episode is not visible')
+    term = None
+    if episode is not None:
+        term = {'visit': visit_id, 'admitted': episode['admitted'],
+                'end': episode['discharged'] or view['as_of'],
+                'duration': episode['duration'],
+                'outcome': episode['outcome'],
+                'censoring_reason': episode['censoring_reason'],
+                'formula': 'discharge_or_as_of_minus_admission'}
+        curve = study['curve']
+        terms = []
+        for row in curve['rows']:
+            for outcome in curve['outcomes']:
+                count = row['outcome_events'][outcome]
+                if count:
+                    terms.append({'time': row['time'], 'outcome': outcome, 'events': count,
+                                  'at_risk': row['at_risk'],
+                                  'increment': {'numerator': count, 'denominator': row['at_risk']}})
+        term['cumulative_incidence_terms_for_episode'] = [
+            row for row in terms if row['time'] == episode['duration']
+            and row['outcome'] == episode['outcome']]
+        term['risk_set_terms_at_episode_time'] = [row for row in terms
+                                                  if row['time'] == episode['duration']]
+    return {'visit': visit_id, 'selected': selected, 'episode': episode,
+            'excluded': excluded, 'invisible': invisible, 'records': records,
+            'term': term, 'stage': study['stage'], 'outside_selected_stage': outside_stage,
+            'definition': study['definition'], 'counts_to_curve': selected,
+            'note': 'excluded_or_invisible_records_do_not_enter_any_risk_set'}

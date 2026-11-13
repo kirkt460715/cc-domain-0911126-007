@@ -99,6 +99,18 @@ def dispatch(dataset, report, kind, options=None):
     if kind == 'public':
         fields(options, (), ('minimum_people',))
         return public_report(dataset, report, **options)
+    if kind == 'competing':
+        fields(options, (), ('target_day', 'comparison'))
+        from waiting_analysis.competing import target_at
+        study = report['competing_risks']
+        if options.get('comparison') is not None:
+            row = next((item for item in study['comparisons'] if item['id'] == options['comparison']), None)
+            if row is None:
+                raise Invalid('unknown competing-risk comparison')
+            return row
+        if options.get('target_day') is not None:
+            return target_at(study['curve'], options['target_day'])
+        return study
     if kind == 'cohort':
         fields(options, (), ('filters', 'horizon', 'unit'))
         rows = select(report['wait_observations']['rows'], options.get('filters'))
@@ -127,7 +139,8 @@ def dispatch(dataset, report, kind, options=None):
         return pathways_by_signature(report, **options)
     simple = {'summary': 'population', 'waiting': 'waiting', 'transitions': 'transitions',
               'quality': 'quality', 'readmissions': 'readmissions', 'gaps': 'handoff_gaps',
-              'rates': 'completion_rates', 'care-spells': 'care_spells', 'lag': 'recording_lag'}
+              'rates': 'completion_rates', 'care-spells': 'care_spells', 'lag': 'recording_lag',
+              'competing-risks': 'competing_risks'}
     if kind in simple:
         fields(options, ())
         return report[simple[kind]]

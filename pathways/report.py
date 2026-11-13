@@ -4,12 +4,22 @@ from pathways.observations import referral_waits, care_spells, completion_rates,
 from pathways.quality import assess, by_facility, recording_lag
 from waiting_analysis.cohorts import analyze_rows, grouped
 from waiting_analysis.survival import kaplan_meier, verify as verify_curve
+from waiting_analysis.competing import study as competing_study, verify_study
+from encounters.schema import STAGES
 
 
-def analyze(dataset, as_of, known_at, horizon=14, readmission_window=30, gap_threshold=7, unit='person'):
+def analyze(dataset, as_of, known_at, horizon=14, readmission_window=30, gap_threshold=7, unit='person',
+            study_stage='acute', study_window_start=None, study_target_day=None, study_comparisons=None):
     integer(horizon, 'horizon', 0, 3650)
     integer(readmission_window, 'readmission_window', 1, 365)
     integer(gap_threshold, 'gap_threshold', 0, 365)
+    if study_stage not in STAGES:
+        raise ValueError('unsupported study stage')
+    if study_window_start is not None:
+        day(study_window_start, 'study_window_start')
+    target = horizon if study_target_day is None else study_target_day
+    integer(target, 'study_target_day', 0, 36500)
+    study_comparisons = [] if study_comparisons is None else study_comparisons
     view = dataset.slice(as_of, known_at)
     chains = build(dataset, view)
     waiting = referral_waits(dataset, view)
@@ -17,10 +27,14 @@ def analyze(dataset, as_of, known_at, horizon=14, readmission_window=30, gap_thr
     spells = care_spells(dataset, view)
     spell_observations = [{key: row[key] for key in ('id', 'duration', 'event')} for row in spells['rows']]
     result = {
-        'version': 1,
+        'version': 2,
         'input_digest': dataset.fingerprint,
         'options': {'as_of': as_of, 'known_at': known_at, 'horizon': horizon,
-                    'readmission_window': readmission_window, 'gap_threshold': gap_threshold, 'unit': unit},
+                    'readmission_window': readmission_window, 'gap_threshold': gap_threshold,
+                    'unit': unit, 'study_stage': study_stage,
+                    'study_window_start': study_window_start,
+                    'study_target_day': target,
+                    'study_comparisons': study_comparisons},
         'population': {'people': len({row['person'] for row in view['visits'].values()}),
                        'visits': len(view['visits']), 'referrals': len(view['referrals']),
                        'chains': len(chains['chains'])},
@@ -32,6 +46,8 @@ def analyze(dataset, as_of, known_at, horizon=14, readmission_window=30, gap_thr
         'by_destination': grouped(waiting['rows'], 'destination_stage', horizon, unit),
         'completion_rates': completion_rates(dataset, view, min(horizon, 365)),
         'care_spells': {'curve': kaplan_meier(spell_observations), 'definition': spells['note']},
+        'competing_risks': competing_study(dataset, view, study_stage, study_window_start, target,
+                                           study_comparisons),
         'readmissions': readmissions(dataset, view, readmission_window),
         'handoff_gaps': gaps(chains, gap_threshold),
         'quality': quality,
@@ -39,13 +55,15 @@ def analyze(dataset, as_of, known_at, horizon=14, readmission_window=30, gap_thr
         'recording_lag': recording_lag(dataset, as_of, known_at),
         'limits': ['explicit_identity_links_only', 'descriptive_not_clinical_recommendation',
                    'pending_referrals_right_censored', 'declined_and_cancelled_excluded_from_wait_curve',
-                   'terminal_outcomes_require_quality_review', 'no_competing_risk_estimation'],
+                   'terminal_outcomes_require_quality_review',
+                   'care_spell_curve_pools_all_discharges_and_is_not_a_recovery_rate',
+                   'competing_risk_estimates_are_descriptive_not_clinical_decisions'],
     }
     return {**result, 'report_digest': digest(result)}
 
 
 def verify(dataset, report, replay=False):
-    if report['version'] != 1 or report['input_digest'] != dataset.fingerprint:
+    if report['version'] != 2 or report['input_digest'] != dataset.fingerprint:
         raise ValueError('report source binding mismatch')
     signature = digest({key: value for key, value in report.items() if key != 'report_digest'})
     if signature != report['report_digest']:
@@ -68,6 +86,10 @@ def verify(dataset, report, replay=False):
         raise ValueError('report chain count differs from details')
     verify_curve(report['waiting']['curve'])
     verify_curve(report['care_spells']['curve'])
+    study_view = dataset.slice(options['as_of'], options['known_at'])
+    verify_study(dataset, study_view, options['study_stage'], report['competing_risks'])
+    if report['competing_risks']['definition']['comparisons'] != options['study_comparisons']:
+        raise ValueError('competing-risk comparisons differ from fixed study options')
     for grouping in ('by_county', 'by_destination'):
         for group in report[grouping]['rows']:
             verify_curve(group['analysis']['curve'])

@@ -13,7 +13,8 @@ from exports import archive
 
 def demo(fixture):
     dataset = Dataset(load(fixture))
-    options = {'as_of': '2026-11-12', 'known_at': '2026-11-12', 'horizon': 7}
+    options = {'as_of': '2026-11-12', 'known_at': '2026-11-12', 'horizon': 7,
+               'study_stage': 'acute', 'study_target_day': 6}
     with tempfile.TemporaryDirectory(prefix='continuity-demo-') as directory:
         root = Path(directory)
         with Journal(root / 'journal.db') as journal:
@@ -29,6 +30,7 @@ def demo(fixture):
             rebuilt = recovery.rebuild(journal, root / 'rebuilt.db')
             return {'source': 'local_synthetic_fixture', 'import': imported,
                     'population': result['result']['population'], 'waiting': result['result']['waiting'],
+                    'competing_risks': result['result']['competing_risks']['target'],
                     'public': public, 'archive': exported, 'csv': tables,
                     'restored': restored, 'rebuilt': rebuilt, 'audit': journal.audit()}
 
@@ -81,6 +83,10 @@ def parser():
         command.add_argument('--unit', choices=['person', 'request'], default='person')
         command.add_argument('--gap-threshold', type=int, default=7)
         command.add_argument('--readmission-window', type=int, default=30)
+        command.add_argument('--study-stage', choices=['acute', 'rehab', 'primary', 'home'], default='acute')
+        command.add_argument('--study-window-start')
+        command.add_argument('--study-target-day', type=int)
+        command.add_argument('--study-comparisons')
     for name in ('replace', 'ingest'):
         command = commands.add_parser(name)
         command.add_argument('--database', required=True)
@@ -183,11 +189,11 @@ def execute(args):
                 raise Invalid('bounded CSV input required')
             return ingest(journal, args.batch, args.base_revision, source.read_text(), load(args.mapping))
         if command == 'analysis-plan':
-            from waiting_analysis.plan import run, verify
+            from waiting_analysis.plan import run, verify as verify_plan
             record = journal.analysis(args.id)
             dataset = journal.dataset(record['revision'])
             execution = run(dataset, record['result'], load(args.definition))
-            verify(dataset, record['result'], execution)
+            verify_plan(dataset, record['result'], execution)
             return execution
         if command == 'replace':
             return journal.replace(args.batch, args.base_revision, load(args.input))
@@ -218,8 +224,14 @@ def execute(args):
 
 
 def analysis_options(args):
+    comparisons = load(args.study_comparisons) if args.study_comparisons else []
+    if not isinstance(comparisons, list):
+        raise Invalid('study comparisons must be a JSON array')
     return {'as_of': args.as_of, 'known_at': args.known_at, 'horizon': args.horizon,
-            'unit': args.unit, 'gap_threshold': args.gap_threshold, 'readmission_window': args.readmission_window}
+            'unit': args.unit, 'gap_threshold': args.gap_threshold,
+            'readmission_window': args.readmission_window,
+            'study_stage': args.study_stage, 'study_window_start': args.study_window_start,
+            'study_target_day': args.study_target_day, 'study_comparisons': comparisons}
 
 
 def main(argv=None):

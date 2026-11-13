@@ -7,6 +7,7 @@ from pathways.provenance import waiting_lineage, chain_lineage, evidence_index
 
 
 KINDS = {'cohort', 'group', 'compare', 'standardize', 'censoring-bounds', 'bootstrap',
+         'competing-risks', 'competing-target', 'competing-compare', 'competing-lineage',
          'leave-facility', 'windows', 'recording-cutoffs', 'funnel', 'monthly', 'outcomes',
          'orphans', 'person-timeline', 'stage-days', 'turnover', 'cross-county',
          'waiting-lineage', 'chain-lineage', 'evidence-index', 'period-requests', 'period-mature', 'period-dispositions', 'period-events', 'period-alarms', 'source-visibility', 'person-coverage', 'facility-coverage', 'destination-coverage', 'partition-audit'}
@@ -51,6 +52,24 @@ def execute_one(dataset, report, kind, options):
             temporal = {key: value for key, value in options.items() if key in ('start', 'end', 'width', 'horizon')}
             mature = periods.mature_service_levels(rows, view['as_of'], **temporal)
             return periods.alarm_rules(mature, options.get('minimum_people', 10), options.get('maximum_waiting_fraction', 50))
+    if kind == 'competing-risks':
+        fields(options, ())
+        return report['competing_risks']
+    if kind == 'competing-target':
+        fields(options, ('day',))
+        from waiting_analysis.competing import target_at
+        return target_at(report['competing_risks']['curve'], options['day'])
+    if kind == 'competing-compare':
+        fields(options, ('comparison',))
+        row = next((item for item in report['competing_risks']['comparisons']
+                    if item['id'] == options['comparison']), None)
+        if row is None:
+            raise Invalid('unknown competing-risk comparison')
+        return row
+    if kind == 'competing-lineage':
+        fields(options, ('visit',))
+        from pathways.provenance import competing_lineage
+        return competing_lineage(dataset, report, options['visit'])
     if kind == 'cohort':
         fields(options, (), ('filters', 'horizon', 'unit'))
         return analyze_rows(select(rows, options.get('filters')), options.get('horizon', 14), unit=options.get('unit', 'person'))
